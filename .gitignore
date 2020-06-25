@@ -33,3 +33,5 @@ mvnw
 mvnw.cmd
 .mvn/
 
+#ES
+esdata/
