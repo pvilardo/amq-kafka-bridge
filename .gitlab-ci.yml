@@ -1,0 +1,190 @@
+image: docker.artifactory.primary/devops/pmy-mvn:latest
+
+services:
+  - docker.scm.primary/devops/docker-dind:latest
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2"
+  DOCKER_HOST: tcp://localhost:2375
+
+before_script:
+  - /usr/bin/git remote set-url origin git@gitlab.primary:${CI_PROJECT_PATH}.git
+  - /usr/bin/git checkout ${CI_COMMIT_REF_NAME}
+  - VERSION=$(/root/scripts/pom_editor.py --get-version-number)
+  - TYPE=$(/root/scripts/pom_editor.py --get-version-type)
+  - echo -n $GCLOUD_JSON > /root/gcloud.json
+  - gcloud auth activate-service-account  --key-file=/root/gcloud.json
+  - gcloud auth configure-docker
+
+# ----------- MAKE TASKS -----------
+make_version:
+  script:
+    - '( git tag | grep -q $(/root/scripts/pom_editor.py --get-version) ) && ( echo "Error! Ya existe el tag && exit 1" )'
+    - if [[ "$TYPE" == "RELEASE" ]]; then
+        mvn -T 2C -B clean deploy docker:build -DpushImageTag=true -DdockerImageTags=$VERSION -Ddocker-registry=docker-prod.scm.primary;
+      else
+        echo "No es RELEASE!";
+        exit 1;
+      fi
+    - git tag "$(/root/scripts/pom_editor.py --get-version)" && git push origin "$(/root/scripts/pom_editor.py --get-version)"
+    - for IMAGE in $(docker images | grep pms | awk '{print $1}' | sort | uniq); do
+        _localImage="${IMAGE}:${VERSION}";
+        _gcloudImage="gcr.io/${GCLOUD_PROJECT}/${IMAGE#*/}:${VERSION}";
+        docker tag ${_localImage} ${_gcloudImage};
+        docker push ${_gcloudImage};
+      done
+  environment: production
+  only:
+    - master
+  when: manual
+
+make_snapshot:
+  script:
+    - if [[ "${TYPE}" != "SNAPSHOT" ]];
+      then
+        /root/scripts/pom_editor.py --set-version-type=SNAPSHOT;
+        git commit . -m "Set version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME};
+      else
+        mvn -T 2C -B clean package docker:build -DpushImage -DpushImageTags;
+      fi
+  cache:
+    paths:
+      - .m2
+  environment: staging
+  only:
+    - development
+
+make_from_branch:
+  script:
+    - if [[ "${TYPE}" != "${CI_COMMIT_REF_NAME##*#}-SNAPSHOT" ]];
+      then
+        /root/scripts/pom_editor.py --set-version-type=${CI_COMMIT_REF_NAME##*#}-SNAPSHOT;
+        git commit . -m "Set version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME};
+      else
+        mvn  -T 2C -B clean package docker:build -DpushImage -DpushImageTags;
+      fi
+  cache:
+    paths:
+      - .m2
+  environment: development
+  only:
+    - /^BUILD-.*/
+
+make_hotfix:
+  script:
+    - if [[ "${TYPE}" != "HOTFIX" ]];
+      then
+        /root/scripts/pom_editor.py --set-version-type=HOTFIX;
+        /root/scripts/pom_editor.py --update-version revision;
+        git commit . -m "Set version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME};
+      else
+        mvn -B clean deploy -Dmaven.test.skip=true docker:build -DpushImageTag -DdockerImageTags=$VERSION-$TYPE;
+      fi
+  environment: staging
+  only:
+    - /^hotfix.*/
+  when: manual
+
+make_rc:
+  script:
+    - if [[ -n "${TYPE%%RC*}" ]];
+      then
+        /root/scripts/pom_editor.py --set-version-type=RC;
+        git commit . -m "Set version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME};
+      else
+        mvn -T 2C -B clean deploy docker:build -DpushImageTag=true -DdockerImageTags=$VERSION-$TYPE;
+      fi
+  environment: staging
+  only:
+    - staging
+  when: manual
+
+# ----------------------------------
+
+# ----------- UPDATE TASKS -----------
+update_snapshot_version:
+  script:
+    - if [[ "${TYPE}" != "SNAPSHOT" ]]; then /root/scripts/pom_editor.py --set-version-type=SNAPSHOT; fi
+    - /root/scripts/pom_editor.py --update-version=minor
+    - git commit . -m"Updated version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME}
+  only:
+    - development
+  when: manual
+
+update_project_version:
+  script:
+    - if [[ -n $VERSION_TYPE ]]; then
+        /root/scripts/pom_editor.py --set-version-type=$VERSION_TYPE;
+        git commit . -m "Set version to $(/root/scripts/pom_editor.py --get-version)" && git push origin ${CI_COMMIT_REF_NAME};
+      fi
+  only:
+    - triggers
+# ------------------------------------
+
+# ----------- CREATE TASKS -----------
+create_branch_staging:
+  before_script: []
+  variables:
+    BASE_URL: 'http://gitlab.primary/api/v4'
+  script:
+    - 'curl -sS --request DELETE --header "PRIVATE-TOKEN: $TOKEN" "$BASE_URL/projects/$CI_PROJECT_ID/repository/branches/staging"'
+    - 'curl -sS --request POST --header "PRIVATE-TOKEN: $TOKEN" "$BASE_URL/projects/$CI_PROJECT_ID/repository/branches/?branch=staging&ref=development"'
+    - 'curl -sS --request POST -F "token=$TRIGGER_TOKEN" -F "ref=staging" -F "variables[VERSION_TYPE]=RC" "$BASE_URL/projects/$CI_PROJECT_ID/trigger/pipeline"'
+  only:
+    - development
+  when: manual
+
+create_branch_hotfix:
+  before_script: []
+  variables:
+    BASE_URL: 'http://gitlab.primary/api/v4'
+  script:
+    - 'curl -sS --request DELETE --header "PRIVATE-TOKEN: $TOKEN" "$BASE_URL/projects/$CI_PROJECT_ID/repository/branches/hotfix"'
+    - 'curl -sS --request POST --header "PRIVATE-TOKEN: $TOKEN" "$BASE_URL/projects/$CI_PROJECT_ID/repository/branches/?branch=hotfix&ref=master"'
+  only:
+    - master
+  when: manual
+# ------------------------------------
+
+make_release_beta_trigger:
+  script:
+    - if [[ -n $REBASE_BRANCH ]]; then
+        /usr/bin/git fetch --all;
+        /usr/bin/git checkout $REBASE_BRANCH;
+        /usr/bin/git checkout ${CI_COMMIT_REF_NAME};
+        git rebase $REBASE_BRANCH;
+        git tag | grep -q $(/root/scripts/pom_editor.py --get-version) && echo "Error! Ya existe el tag && exit 1";
+        /root/scripts/pom_editor.py --set-version-type=RELEASE;
+        /root/scripts/pom_editor.py --set-all-property-version-type=RELEASE;
+        git commit . -m "Set versions" && git push origin ${CI_COMMIT_REF_NAME};
+        mvn -T 2C -B clean deploy docker:build -DpushImageTag=true -DdockerImageTags=$VERSION -Ddocker-registry=docker-prod.scm.primary;
+        git tag "$(/root/scripts/pom_editor.py --get-version)" && git push origin "$(/root/scripts/pom_editor.py --get-version)";
+      fi
+  only:
+    - triggers
+
+make_release_beta:
+  variables:
+    BASE_URL: 'http://gitlab.primary/api/v4'
+  script:
+    - 'curl -sS --request POST -F "token=$TRIGGER_TOKEN" -F "ref=master" -F "variables[REBASE_BRANCH]=$CI_COMMIT_REF_NAME" "$BASE_URL/projects/$CI_PROJECT_ID/trigger/pipeline"'
+  only:
+    - staging
+    - hotfix
+  when: manual
+
+update_dependency_property:
+  script:
+    - if [[ -n "${DEPENDENCY_VERSION}" ]] && [[ -n "${PROPERTY_NAME}" ]];
+      then
+        /root/scripts/pom_editor.py --set-property-version="${PROPERTY_NAME}:${DEPENDENCY_VERSION}" &&
+        git commit pom.xml -m"Updated property ${PROPERTY_NAME} to $(/root/scripts/pom_editor.py --get-property-version=${PROPERTY_NAME})" &&
+        git push origin ${CI_COMMIT_REF_NAME};
+      fi
+  only:
+    - triggers
+
+
+
+
+

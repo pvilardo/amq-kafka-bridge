@@ -16,6 +16,8 @@
 
 	<properties>
 		<java.version>1.8</java.version>
+		<docker-maven-plugin.version>0.4.11</docker-maven-plugin.version>
+		<docker-registry>docker.scm.primary</docker-registry>
 	</properties>
 
 	<dependencies>
@@ -84,6 +86,36 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+			</plugin>
+			<plugin>
+				<groupId>com.spotify</groupId>
+				<artifactId>docker-maven-plugin</artifactId>
+				<version>${docker-maven-plugin.version}</version>
+				<configuration>
+					<serverId>${docker-registry}</serverId>
+					<imageName>${docker-registry}/pms/${project.artifactId}</imageName>
+					<dockerDirectory>${project.basedir}/src/main/docker</dockerDirectory>
+					<skipDockerBuild>true</skipDockerBuild>
+					<resources>
+						<resource>
+							<targetPath>/</targetPath>
+							<directory>${project.build.directory}</directory>
+							<include>${project.build.finalName}.jar*</include>
+						</resource>
+					</resources>
+					<imageTags>
+						<imageTag>${project.version}</imageTag>
+						<imageTag>latest</imageTag>
+					</imageTags>
+					<buildArgs>
+						<REPO_URL>${env.CI_PROJECT_URL}</REPO_URL>
+						<REPO_COMMIT_REF>${env.CI_COMMIT_SHA}</REPO_COMMIT_REF>
+						<REPO_COMMITTER>${env.GITLAB_USER_EMAIL}</REPO_COMMITTER>
+						<ARTIFACT_BUILD_DATE>${maven.build.timestamp}</ARTIFACT_BUILD_DATE>
+						<ARTIFACT_VERSION>${project.version}</ARTIFACT_VERSION>
+						<ARTIFACT_NAME>${project.artifactId}</ARTIFACT_NAME>
+					</buildArgs>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>
