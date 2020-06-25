@@ -1,9 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <routes xmlns="http://camel.apache.org/schema/spring">
-    <route id="routeId">
-        <from uri="activemq:yourQueuee=true&amp;destination.consumer.prefetchSize=50"/>
-        <to uri="kafka://localhost:9092?topic=customtopic&amp;brokers=localhost:9092" />
+    <route id="orders-rofex">
+        <from uri="activemq:topic.external.orders.byma.topic?messageConverter=#fstConverter"/>
+        <log message="${body}"/>
+        <to uri="kafka://${HOST_REMOTE_ZOOKEEPER}:${PORT_REMOTE_ZOOKEEPER}?topic=topic.orders&amp;serializerClass=ar.com.primary.eventbridge.JsonPOJOSerializer" />
     </route>
+    <route id="orders-byma">
+        <from uri="activemq:topic.external.orders.rofex.topic?messageConverter=#fstConverter"/>
+        <log message="${body}"/>
+        <to uri="kafka://${HOST_REMOTE_ZOOKEEPER}:${PORT_REMOTE_ZOOKEEPER}?topic=topic.orders&amp;serializerClass=ar.com.primary.eventbridge.JsonPOJOSerializer" />
+    </route>
+    <route id="executionreports">
+        <from uri="activemq:topic.external.executionreports.topic?messageConverter=#fstConverter"/>
+        <log message="${body}"/>
+        <to uri="kafka://${HOST_REMOTE_ZOOKEEPER}:${PORT_REMOTE_ZOOKEEPER}?topic=topic.executionreports&amp;serializerClass=ar.com.primary.eventbridge.JsonPOJOSerializer" />
+    </route>
+    t
 </routes>
+
 
